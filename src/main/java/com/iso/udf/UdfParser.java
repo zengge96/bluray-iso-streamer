@@ -225,7 +225,7 @@ public class UdfParser {
         String contents = "";
         try {
             byte[] cont = new byte[32];
-            System.arraycopy(data, offset + 56, cont, 0, 32);
+            System.arraycopy(data, offset + 96, cont, 0, 32);
             contents = new String(cont, "ISO-8859-1").trim();
         } catch (Exception e) {}
         
@@ -258,9 +258,9 @@ public class UdfParser {
     }
 
     private List<IsoFile> parseRootDirectory() throws IOException {
-        // Calculate FileSet offset - it's at partition start + sector 0
-        long fileSetOffset = partitionStart;
-        System.out.println("Reading FileSet from offset " + fileSetOffset);
+        // FileSet is at partition start + fileSetLocation * sectorSize
+        long fileSetOffset = partitionStart + fileSetLocation * sectorSize;
+        System.out.println("Reading FileSet from sector " + fileSetLocation + " (offset " + fileSetOffset + ")");
         
         try {
             byte[] fsData = readRange(fileSetOffset, sectorSize);
@@ -296,24 +296,24 @@ public class UdfParser {
         List<IsoFile> files = new ArrayList<>();
         
         // Check if this is a directory
-        int icbFileType = data[offset + 11] & 0xFF;
+        int icbFileType = data[offset + 27] & 0xFF;
         boolean isDirectory = (icbFileType == ICB_FILE_TYPE_DIR);
         
         System.out.println("FileEntry type: " + icbFileType + " (directory=" + isDirectory + ")");
         
         // File size at offset 56
-        long fileSize = readUInt64(data, offset + 56);
+        long fileSize = readUInt64(data, offset + 96);
         System.out.println("File size: " + fileSize);
         
         // Allocation descriptor
-        int extAttrLen = (int) readUInt32(data, offset + 168);
-        int allocDescLen = (int) readUInt32(data, offset + 172);
+        int extAttrLen = (int) readUInt32(data, offset + 208);
+        int allocDescLen = (int) readUInt32(data, offset + 212);
         
         System.out.println("ExtAttrLen=" + extAttrLen + ", AllocDescLen=" + allocDescLen);
         
         // For directories, read the allocation descriptor to find data
         if (isDirectory && allocDescLen > 0) {
-            int descStart = 176 + extAttrLen;
+            int descStart = 216 + extAttrLen;
             
             if (data.length >= descStart + 16) {
                 long dataOffset = readUInt32(data, descStart + 4);
@@ -402,7 +402,7 @@ public class UdfParser {
         int extAttrLen = (int) readUInt32(dirData, 168);
         int allocDescLen = (int) readUInt32(dirData, 172);
         
-        int descStart = 176 + extAttrLen;
+        int descStart = 216 + extAttrLen;
         
         if (allocDescLen > 0 && dirData.length >= descStart + 16) {
             long dataOffset = readUInt32(dirData, descStart + 4);
