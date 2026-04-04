@@ -121,27 +121,54 @@ public class HttpService {
     
     private static String getFileListHtml() {
         StringBuilder sb = new StringBuilder();
-        sb.append("<html><head><title>ISO File List</title>");
-        sb.append("<style>body{font-family:Arial;margin:20px}");
-        sb.append("table{border-collapse:collapse;width:100%}");
+        sb.append("<html><head><title>ISO Streaming Service</title>");
+        sb.append("<style>body{font-family:Arial;margin:20px;max-width:800px}");
+        sb.append("table{border-collapse:collapse;width:100%;margin:10px 0}");
         sb.append("th,td{border:1px solid #ddd;padding:8px;text-align:left}");
-        sb.append("th{background-color:#4CAF50;color:white}</style>");
-        sb.append("</head><body>");
-        sb.append("<h1>ISO Streaming Service</h1>");
-        sb.append("<h2>ISO Info</h2>");
+        sb.append("th{background-color:#4CAF50;color:white}");
+        sb.append(".info-box{background:#e7f3fe;border-left:4px solid #2196F3;padding:10px;margin:10px 0}");
+        sb.append(".warning{background:#fff3cd;border-left:4px solid #ffc107;padding:10px;margin:10px 0}");
+        sb.append("pre{background:#f5f5f5;padding:10px;border-radius:4px;overflow-x:auto}");
+        sb.append("</style></head><body>");
+        sb.append("<h1>🎬 ISO Streaming Service</h1>");
+        
+        // ISO Info
+        sb.append("<div class='info-box'>");
+        sb.append("<h2>📀 ISO Information</h2>");
         sb.append("<table>");
         sb.append("<tr><th>Property</th><th>Value</th></tr>");
         sb.append("<tr><td>Sector Size</td><td>").append(parser.getSectorSize()).append(" bytes</td></tr>");
         sb.append("<tr><td>Partition Start</td><td>sector ").append(parser.getPartitionStartLsn()).append("</td></tr>");
-        sb.append("<tr><td>Partition Size</td><td>").append(parser.getPartitionLength()).append(" bytes</td></tr>");
+        sb.append("<tr><td>Partition Size</td><td>").append(String.format("%.2f GB", parser.getPartitionLength()/1024.0/1024.0/1024.0)).append("</td></tr>");
         sb.append("<tr><td>Block Size</td><td>").append(parser.getBlockSize()).append(" bytes</td></tr>");
-        sb.append("</table>");
+        sb.append("</table></div>");
         
-        sb.append("<h2>Streaming API</h2>");
-        sb.append("<p>Use /stream endpoint to stream data:</p>");
-        sb.append("<pre>/stream?offset=&lt;sector&gt;&size=&lt;bytes&gt;</pre>");
-        sb.append("<p>Example:</p>");
-        sb.append("<pre>/stream?offset=288&size=4096</pre>");
+        // File list note
+        sb.append("<div class='warning'>");
+        sb.append("<h2>📁 File List</h2>");
+        sb.append("<p><b>Note:</b> For Blu-ray ISOs, the file list (FileSet) is located in the main partition.</p>");
+        sb.append("<p>This ISO's main partition starts at <b>sector ").append(parser.getPartitionStartLsn());
+        sb.append("</b> (approximately 1.2GB into the file).</p>");
+        sb.append("<p>To list files, you would need to download the complete ISO or the metadata partition.</p>");
+        sb.append("</div>");
+        
+        // Streaming API
+        sb.append("<h2>📡 Streaming API</h2>");
+        sb.append("<p>You can manually stream data by specifying sector offset and size:</p>");
+        sb.append("<pre>/stream?offset=&lt;sector_number&gt;&size=&lt;bytes&gt;</pre>");
+        sb.append("<h3>Examples:</h3>");
+        sb.append("<ul>");
+        sb.append("<li>Read partition start: <code>/stream?offset=").append(parser.getPartitionStartLsn()).append("&size=4096</code></li>");
+        sb.append("<li>Read 64KB from sector 0: <code>/stream?offset=0&size=65536</code></li>");
+        sb.append("</ul>");
+        
+        sb.append("<h2>🔧 Quick Reference</h2>");
+        sb.append("<table>");
+        sb.append("<tr><th>Location</th><th>Sector</th><th>Description</th></tr>");
+        sb.append("<tr><td>Anchor VD</td><td>256</td><td>Volume descriptors anchor</td></tr>");
+        sb.append("<tr><td>VDS</td><td>32-47</td><td>Volume Descriptor Sequence</td></tr>");
+        sb.append("<tr><td>Main Partition</td><td>").append(parser.getPartitionStartLsn()).append("</td><td>BDAREA file content</td></tr>");
+        sb.append("</table>");
         
         sb.append("</body></html>");
         return sb.toString();
