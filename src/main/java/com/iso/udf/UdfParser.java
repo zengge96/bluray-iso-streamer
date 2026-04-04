@@ -486,7 +486,7 @@ public class UdfParser {
         public byte[] readSectors(long startSector, int count) throws IOException {
             long offset = startSector * (long) sectorSize + partitionStart;
             int len = count * sectorSize;
-            return readRange(offset, len);
+            return UdfParser.this.readRange(offset, len);
         }
     }
     
