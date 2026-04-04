@@ -9,10 +9,10 @@ public class UdfParser {
     private static final int DESC_TYPE_PARTITION = 5;
     private static final int DESC_TYPE_LOGICAL_VOL = 6;
     private static final int DESC_TYPE_FILE_ID = 257;
-    private static final int DESC_TYPE_EXTENDED_FILE = 266;
     private static final int ANCHOR_VOL_DESCRIPTOR_LOCATION = 256;
     
     private URL url;
+    private URL actualUrl;  // Cached redirect URL
     private final RandomAccessFile localFile;
     private boolean isNetwork;
     private int sectorSize = 2048;
@@ -44,6 +44,7 @@ public class UdfParser {
     
     private long findAnchorVolumeDescriptor() throws IOException {
         long offset = (long) ANCHOR_VOL_DESCRIPTOR_LOCATION * sectorSize;
+        System.out.println("Reading Anchor VD at offset " + offset);
         byte[] buf = readRange(offset, sectorSize);
         int tagId = ((buf[1] & 0xFF) << 8) | (buf[0] & 0xFF);
         if (tagId == DESC_TYPE_ANCHOR_VOL_PTR) {
@@ -76,7 +77,6 @@ public class UdfParser {
     private void parseMetadataPartition() throws IOException {
         System.out.println("Parsing metadata at sector 320...");
         
-        // Read more sectors for file list
         for (int sec = 320; sec < 500; sec++) {
             byte[] data = readSectors(sec, 4);
             if (data == null || data.length < 38) continue;
@@ -88,7 +88,6 @@ public class UdfParser {
                 int idLen = data[offset + 19] & 0xFF;
                 int implLen = ((data[offset+37]&0xFF)<<8)|(data[offset+36]&0xFF);
                 
-                // ICB at offset +20, location at +8 from there
                 long icbLoc = ((data[offset+28]&0xFF)<<24)|((data[offset+27]&0xFF)<<16)|
                               ((data[offset+26]&0xFF)<<8)|(data[offset+25]&0xFF);
                 
@@ -97,7 +96,7 @@ public class UdfParser {
                 
                 String name = parseDstring(data, nameStart, idLen);
                 
-                if (name.length() > 0 && !files.contains(name)) {
+                if (name.length() > 0 && !containsFile(name)) {
                     IsoFile f = new IsoFile();
                     f.name = name;
                     f.sector = icbLoc;
@@ -108,12 +107,16 @@ public class UdfParser {
         System.out.println("Found " + files.size() + " files");
     }
     
+    private boolean containsFile(String name) {
+        for (IsoFile f : files) {
+            if (f.name.equals(name)) return true;
+        }
+        return false;
+    }
+    
     private String parseDstring(byte[] data, int start, int len) {
         if (len < 2) return "";
-        
-        // Check for character set identifier
         if (data[start] == 0x10) {
-            // UTF-16BE
             StringBuilder sb = new StringBuilder();
             for (int i = 1; i + 1 < len && start + i + 1 < data.length; i += 2) {
                 char c = (char)((data[start + i] << 8) | (data[start + i + 1] & 0xFF));
@@ -121,7 +124,6 @@ public class UdfParser {
             }
             return sb.toString();
         } else {
-            // ASCII
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < len && start + i < data.length; i++) {
                 char c = (char)(data[start + i] & 0xFF);
@@ -137,18 +139,31 @@ public class UdfParser {
                 localFile.seek(offset);
                 byte[] buf = new byte[length];
                 int read = localFile.read(buf);
-                if (read < length) {
-                    return Arrays.copyOf(buf, read);
-                }
+                if (read < length) return Arrays.copyOf(buf, read);
                 return buf;
             }
         }
         
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setInstanceFollowRedirects(true);
+        // Use cached URL if available
+        URL targetUrl = (actualUrl != null) ? actualUrl : url;
+        
+        HttpURLConnection conn = (HttpURLConnection) targetUrl.openConnection();
+        conn.setInstanceFollowRedirects(false);
         conn.setRequestProperty("Range", "bytes=" + offset + "-" + (offset + length - 1));
-        conn.setConnectTimeout(15000);
+        conn.setConnectTimeout(20000);
         conn.setReadTimeout(30000);
+        
+        int responseCode = conn.getResponseCode();
+        if (responseCode == 302 || responseCode == 301 || responseCode == 303) {
+            String newUrlStr = conn.getHeaderField("Location");
+            conn.disconnect();
+            actualUrl = new URL(newUrlStr);  // Cache it
+            System.out.println("Redirect to: " + newUrlStr.substring(0, 60) + "...");
+            conn = (HttpURLConnection) actualUrl.openConnection();
+            conn.setRequestProperty("Range", "bytes=" + offset + "-" + (offset + length - 1));
+            conn.setConnectTimeout(20000);
+            conn.setReadTimeout(30000);
+        }
         
         InputStream is = conn.getInputStream();
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -167,10 +182,7 @@ public class UdfParser {
         return readRange(offset, count * 2048);
     }
     
-    public IsoFileReader createFileReader() {
-        return new IsoFileReader();
-    }
-    
+    public IsoFileReader createFileReader() { return new IsoFileReader(); }
     public List<IsoFile> getFiles() { return files; }
     public long getPartitionStart() { return partitionStart; }
     public long getPartitionLength() { return partitionLength; }

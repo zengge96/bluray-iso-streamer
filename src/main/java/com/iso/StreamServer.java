@@ -8,16 +8,15 @@ import java.util.*;
 
 public class StreamServer {
     static UdfParser parser;
-    static String isoUrl;
     
     public static void main(String[] args) throws Exception {
-        isoUrl = new String(java.nio.file.Files.readAllBytes(
+        String url = new String(java.nio.file.Files.readAllBytes(
             java.nio.file.Paths.get("/root/.openclaw/workspace/url.txt"))).trim();
         
-        parser = new UdfParser(isoUrl);
+        parser = new UdfParser(url);
         parser.parse();
         
-        System.out.println("Server ready. Files: " + parser.getFiles().size());
+        System.out.println("Parsed " + parser.getFiles().size() + " files");
         
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
         
@@ -25,13 +24,15 @@ public class StreamServer {
             StringBuilder sb = new StringBuilder();
             sb.append("{\"files\":[");
             List<IsoFile> files = parser.getFiles();
-            for (int i = 0; i < files.size(); i++) {
+            for (int i = 0; i < Math.min(files.size(), 500); i++) {
                 IsoFile f = files.get(i);
-                sb.append("{\"name\":\"").append(f.name).append("\",\"sector\":").append(f.sector).append("}");
+                sb.append("{\"name\":\"").append(f.name.replace("\"", "\\\""))
+                  .append("\",\"sector\":").append(f.sector).append("}");
                 if (i < files.size() - 1) sb.append(",");
             }
-            sb.append("]}");
+            sb.append("],\"total\":").append(files.size()).append("}");
             
+            ex.getResponseHeaders().set("Content-Type", "application/json");
             ex.sendResponseHeaders(200, sb.length());
             OutputStream os = ex.getResponseBody();
             os.write(sb.toString().getBytes());
@@ -50,9 +51,9 @@ public class StreamServer {
                 return;
             }
             
-            long sector = Long.parseLong(sectorStr);
             try {
-                byte[] data = parser.readSectors(sector, 1);
+                long sector = Long.parseLong(sectorStr);
+                byte[] data = parser.readSectors(sector, 40);  // Read 40 sectors ~80KB
                 ex.getResponseHeaders().set("Content-Type", "video/mp2t");
                 ex.getResponseHeaders().set("Accept-Ranges", "bytes");
                 ex.sendResponseHeaders(200, data.length);
@@ -60,32 +61,42 @@ public class StreamServer {
                 os.write(data);
                 os.close();
             } catch (Exception e) {
-                ex.sendResponseHeaders(500, -1);
+                ex.sendResponseHeaders(500, 0);
             }
         });
         
         server.createContext("/", ex -> {
-            String html = "<html><body>" +
-                "<h1>Blu-ray ISO Streamer</h1>" +
-                "<p>Files: " + parser.getFiles().size() + "</p>" +
-                "<h2>Sample m2ts files:</h2>" +
-                "<ul>";
+            String html = "<html><head><title>Blu-ray ISO Streamer</title></head><body>" +
+                "<h1>🦕 Jurassic World Blu-ray ISO Streamer</h1>" +
+                "<p>Total files: " + parser.getFiles().size() + "</p>" +
+                "<h2>📁 Directories</h2><ul>";
             
             for (IsoFile f : parser.getFiles()) {
-                if (f.name.endsWith(".m2ts") && html.length() < 8000) {
-                    html += "<li><a href='/stream?sector=" + f.sector + "'>" + f.name + "</a></li>";
+                if (!f.name.contains(".")) {
+                    html += "<li>" + f.name + "</li>";
+                }
+            }
+            html += "</ul><h2>🎬 m2ts Videos</h2><ul>";
+            
+            int count = 0;
+            for (IsoFile f : parser.getFiles()) {
+                if (f.name.endsWith(".m2ts") && count < 50) {
+                    html += "<li><a href='/stream?sector=" + f.sector + "' target='_blank'>" + f.name + "</a> (sector " + f.sector + ")</li>";
+                    count++;
                 }
             }
             html += "</ul></body></html>";
             
-            ex.getResponseHeaders().set("Content-Type", "text/html");
+            ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
             ex.sendResponseHeaders(200, html.length());
-            ex.getResponseBody().write(html.getBytes());
+            ex.getResponseBody().write(html.getBytes("utf-8"));
             ex.getResponseBody().close();
         });
         
         server.setExecutor(null);
         server.start();
-        System.out.println("HTTP server on port 8080");
+        System.out.println("🌐 Server: http://localhost:8080");
+        System.out.println("📁 Files: http://localhost:8080/files");
+        System.out.println("🎬 Stream: http://localhost:8080/stream?sector=16777218");
     }
 }
