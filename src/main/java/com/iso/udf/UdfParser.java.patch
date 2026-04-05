@@ -1,4 +1,0 @@
---- The issue is in parseFileEntry():
---- 1. File size should be at offset 56 (not calculated differently)
---- 2. ICB File Type is at offset 19
---- 3. Allocation descriptors start at 176 + extAttrLen
