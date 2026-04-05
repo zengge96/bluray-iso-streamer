@@ -83,10 +83,20 @@ public class StreamServer {
             long sector = Long.parseLong(sectorStr);
             long fileSize = 0;
             for (IsoFile f : parser.getFiles()) {
-                if (f.name.equals(filename) || f.name.replace(".m2ts", ".mts").equals(filename)) {
+                // 匹配：完整路径或纯文件名
+                String shortName = f.name.contains("/") ? f.name.substring(f.name.lastIndexOf("/") + 1) : f.name;
+                if (f.name.equals(filename) || shortName.equals(filename) || 
+                    f.name.replace(".m2ts", ".mts").equals(filename)) {
                     fileSize = f.size;
                     break;
                 }
+            }
+            // 如果还是找不到，尝试从URL参数获取size
+            if (fileSize <= 0 && query != null && query.contains("size=")) {
+                int s = query.indexOf("size=") + 5;
+                int e = query.indexOf("&", s);
+                if (e < 0) e = query.length();
+                try { fileSize = Long.parseLong(query.substring(s, e)); } catch (Exception e2) {}
             }
             if (fileSize <= 0) fileSize = 100 * 1024 * 1024;
             
