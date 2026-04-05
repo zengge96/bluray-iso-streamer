@@ -122,19 +122,21 @@ public class StreamServer {
             end = Math.min(end, fileSize - 1);
             long contentLength = end - start + 1;
             
-            // 读取数据 (M2TS 从偏移 4 开始)
-            byte[] data = parser.readFileRange(sector, start == 0 ? 4 : start, (int)(contentLength - 4));
+            // 读取数据: 文件数据从 sector*2048+4 开始
+            // Range 请求的 start 是文件内的偏移，需要加到 sector 偏移上
+            long fileDataStart = sector * 2048L + 4 + start;
+            byte[] data = parser.readRange(fileDataStart, (int)contentLength);
             if (data == null) data = new byte[0];
             
             // 设置响应头
             ex.getResponseHeaders().set("Content-Type", "video/mp2t");
             ex.getResponseHeaders().set("Content-Length", String.valueOf(data.length));
             ex.getResponseHeaders().set("Accept-Ranges", "bytes");
-            if (!isDownload) {
-                ex.getResponseHeaders().set("Content-Disposition", "inline; filename=\"" + filename + "\"");
-            }
             if (rangeHeader != null) {
                 ex.getResponseHeaders().set("Content-Range", "bytes " + start + "-" + end + "/" + fileSize);
+            }
+            if (!isDownload) {
+                ex.getResponseHeaders().set("Content-Disposition", "inline; filename=\"" + filename + "\"");
             }
             
             int status = (rangeHeader != null) ? 206 : 200;
