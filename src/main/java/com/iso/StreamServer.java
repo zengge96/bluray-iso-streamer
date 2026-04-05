@@ -20,84 +20,19 @@ public class StreamServer {
         
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
         
-        // Home - file browser
         server.createContext("/", ex -> {
             try {
                 String path = ex.getRequestURI().getPath();
-                if (path.equals("/")) path = "/BDMV";
-                
-                String html = "<!DOCTYPE html><html><head>" +
-                    "<meta charset='utf-8'><title>Blu-ray ISO Browser</title>" +
-                    "<style>body{font-family:monospace;padding:20px}" +
-                    "h1{color:#333}h2{color:#666;margin-top:30px}" +
-                    "a{text-decoration:none;color:#0066cc}" +
-                    "a:hover{text-decoration:underline}" +
-                    "ul{list-style:none;padding:0}" +
-                    "li{padding:5px 0;border-bottom:1px solid #eee}" +
-                    ".dir{color:#ff6600}.file{color:#0066cc}" +
-                    ".size{color:#999;font-size:0.9em}</style>" +
-                    "</head><body>" +
-                    "<h1>🦕 Jurassic World Blu-ray ISO</h1>" +
-                    "<p>Total files: " + parser.getFiles().size() + " | " +
-                    "<a href='/files'>JSON API</a> | " +
-                    "<a href='/info'>Info</a></p>";
-                
-                // Build directory tree
-                Map<String, List<IsoFile>> dirs = new TreeMap<>();
-                for (IsoFile f : parser.getFiles()) {
-                    String dir = "/";
-                    String name = f.name;
-                    int slash = name.lastIndexOf('/');
-                    if (slash > 0) {
-                        dir = name.substring(0, slash);
-                        name = name.substring(slash + 1);
-                    }
-                    dirs.computeIfAbsent(dir, k -> new ArrayList<>()).add(f);
+                if (path.equals("/")) {
+                    showRoot(ex);
+                } else {
+                    showDirectory(ex, path);
                 }
-                
-                // Show root directories
-                html += "<h2>📁 Root Directory</h2><ul>";
-                Set<String> rootDirs = new TreeSet<>();
-                for (String d : dirs.keySet()) {
-                    if (d.equals("/")) {
-                        for (IsoFile f : dirs.get(d)) {
-                            String fname = f.name;
-                            boolean isDir = !fname.contains(".");
-                            if (isDir) {
-                                html += "<li class='dir'>📁 <a href='/" + fname + "/'>" + fname + "</a></li>";
-                            }
-                        }
-                    }
-                }
-                html += "</ul>";
-                
-                ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
-                byte[] data = html.getBytes("utf-8");
-                ex.sendResponseHeaders(200, data.length);
-                ex.getResponseBody().write(data);
-                ex.getResponseBody().close();
             } catch (Exception e) {
                 ex.sendResponseHeaders(500, 0);
             }
         });
         
-        // Directory browsing
-        server.createContext("/BDMV", ex -> {
-            try {
-                String path = ex.getRequestURI().getPath();
-                String html = browseDirectory(path);
-                
-                byte[] data = html.getBytes("utf-8");
-                ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
-                ex.sendResponseHeaders(200, data.length);
-                ex.getResponseBody().write(data);
-                ex.getResponseBody().close();
-            } catch (Exception e) {
-                ex.sendResponseHeaders(500, 0);
-            }
-        });
-        
-        // Files JSON API
         server.createContext("/files", ex -> {
             StringBuilder sb = new StringBuilder();
             sb.append("{\"files\":[");
@@ -110,42 +45,13 @@ public class StreamServer {
             }
             sb.append("],\"total\":").append(files.size()).append("}");
             
-            String resp = sb.toString();
-            byte[] data = resp.getBytes("utf-8");
+            byte[] data = sb.toString().getBytes("utf-8");
             ex.getResponseHeaders().set("Content-Type", "application/json");
             ex.sendResponseHeaders(200, data.length);
             ex.getResponseBody().write(data);
             ex.getResponseBody().close();
         });
         
-        // Stream/Download
-        server.createContext("/stream", ex -> {
-            String query = ex.getRequestURI().getQuery();
-            String sectorStr = null;
-            if (query != null && query.startsWith("sector=")) {
-                sectorStr = query.substring(7);
-            }
-            
-            if (sectorStr == null) {
-                ex.sendResponseHeaders(400, 0);
-                return;
-            }
-            
-            try {
-                long sector = Long.parseLong(sectorStr);
-                byte[] data = parser.readSectors(sector, 100);  // 200KB
-                ex.getResponseHeaders().set("Content-Type", "application/octet-stream");
-                ex.getResponseHeaders().set("Content-Disposition", "attachment; filename=stream.ts");
-                ex.sendResponseHeaders(200, data.length);
-                OutputStream os = ex.getResponseBody();
-                os.write(data);
-                os.close();
-            } catch (Exception e) {
-                ex.sendResponseHeaders(500, 0);
-            }
-        });
-        
-        // Direct file download by sector
         server.createContext("/download", ex -> {
             String query = ex.getRequestURI().getQuery();
             String sectorStr = null, filename = "file";
@@ -168,7 +74,7 @@ public class StreamServer {
             
             try {
                 long sector = Long.parseLong(sectorStr);
-                byte[] data = parser.readSectors(sector, 200);  // 400KB
+                byte[] data = parser.readSectors(sector, 200);
                 ex.getResponseHeaders().set("Content-Type", "application/octet-stream");
                 ex.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + filename + "\"");
                 ex.sendResponseHeaders(200, data.length);
@@ -180,81 +86,141 @@ public class StreamServer {
             }
         });
         
-        // Info
-        server.createContext("/info", ex -> {
-            String info = "Blu-ray ISO Streamer\n" +
-                "Files: " + parser.getFiles().size() + "\n" +
-                "Partition: " + parser.getPartitionStart() + "\n" +
-                "Example: /download?sector=16777218&name=00001.m2ts";
-            
-            byte[] data = info.getBytes("utf-8");
-            ex.getResponseHeaders().set("Content-Type", "text/plain");
-            ex.sendResponseHeaders(200, data.length);
-            ex.getResponseBody().write(data);
-            ex.getResponseBody().close();
-        });
-        
         server.setExecutor(null);
         server.start();
         System.out.println("Server: http://localhost:8080");
-        System.out.println("Files: http://localhost:8080/files");
     }
     
-    static String browseDirectory(String path) {
-        StringBuilder html = new StringBuilder();
-        html.append("<!DOCTYPE html><html><head>" +
-            "<meta charset='utf-8'><title>").append(path).append("</title>" +
-            "<style>body{font-family:monospace;padding:20px}" +
-            "a{text-decoration:none;color:#0066cc}" +
-            "li{padding:8px 0;border-bottom:1px solid #eee}" +
-            ".dir{color:#ff6600;font-weight:bold}</style>" +
-            "</head><body>" +
-            "<h1>📁 ").append(path).append("</h1>" +
-            "<p><a href='/'>🏠 Root</a></p><ul>");
+    static void showRoot(HttpExchange ex) throws Exception {
+        String html = "<!DOCTYPE html><html><head>" +
+            "<meta charset='utf-8'><title>Blu-ray ISO</title>" +
+            "<style>body{font-family:monospace;padding:20px;background:#f5f5f5}" +
+            "h1{color:#333}h2{color:#666}" +
+            "a{text-decoration:none;color:#0066cc;display:block;padding:8px}" +
+            "a:hover{background:#e0e0e0;border-radius:4px}" +
+            "ul{background:white;padding:20px;border-radius:8px;list-style:none;box-shadow:0 2px 4px rgba(0,0,0,0.1)}" +
+            "li{padding:5px 0;border-bottom:1px solid #eee}.dir:before{content:'📁 '}</style></head><body>" +
+            "<h1>🦕 Jurassic World Blu-ray ISO</h1>" +
+            "<p>Total files: " + parser.getFiles().size() + " | <a href='/files'>JSON</a></p>" +
+            "<h2>📁 Root Directory</h2><ul>";
         
-        // Group files by directory
-        Map<String, List<IsoFile>> dirs = new TreeMap<>();
-        List<IsoFile> files = new ArrayList<>();
-        
+        Set<String> rootDirs = new TreeSet<>();
         for (IsoFile f : parser.getFiles()) {
-            String dir = "/";
-            String name = f.name;
-            int slash = name.lastIndexOf('/');
-            if (slash > 0) {
-                dir = name.substring(0, slash);
-                name = name.substring(slash + 1);
+            if (!f.name.contains("/")) {
+                rootDirs.add(f.name);
             }
-            
-            if (dir.equals(path) || (path.equals("/BDMV") && dir.equals("/BDMV"))) {
-                if (name.contains(".")) {
-                    files.add(f);
+        }
+        
+        for (String d : rootDirs) {
+            boolean isDir = !d.contains(".");
+            if (isDir) {
+                html += "<li class='dir'><a href='/" + d + "/'>" + d + "</a></li>";
+            }
+        }
+        
+        html += "</ul></body></html>";
+        
+        byte[] data = html.getBytes("utf-8");
+        ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+        ex.sendResponseHeaders(200, data.length);
+        ex.getResponseBody().write(data);
+        ex.getResponseBody().close();
+    }
+    
+    static void showDirectory(HttpExchange ex, String path) throws Exception {
+        String dirName = path;
+        if (dirName.startsWith("/")) dirName = dirName.substring(1);
+        if (dirName.endsWith("/")) dirName = dirName.substring(0, dirName.length() - 1);
+        
+        String html = "<!DOCTYPE html><html><head>" +
+            "<meta charset='utf-8'><title>" + dirName + "</title>" +
+            "<style>body{font-family:monospace;padding:20px;background:#f5f5f5}" +
+            "a{text-decoration:none;color:#0066cc;display:block;padding:8px}" +
+            "a:hover{background:#e0e0e0;border-radius:4px}" +
+            "ul{background:white;padding:20px;border-radius:8px;list-style:none;box-shadow:0 2px 4px rgba(0,0,0,0.1)}" +
+            "li{padding:5px 0;border-bottom:1px solid #eee}.back{color:#666;margin-bottom:10px}</style></head><body>" +
+            "<h1>📁 /" + dirName + "/</h1>" +
+            "<a class='back' href='/'>⬆️ Back to Root</a>" +
+            "<h2>📄 Files in this directory</h2><ul>";
+        
+        // Show all files that might be in this directory (by extension pattern)
+        // Since we don't have full paths, show files by type
+        String targetDir = "/" + dirName + "/";
+        
+        List<IsoFile> showFiles = new ArrayList<>();
+        
+        // For STREAM directory, show m2ts files
+        if (dirName.equalsIgnoreCase("STREAM")) {
+            for (IsoFile f : parser.getFiles()) {
+                if (f.name.endsWith(".m2ts")) {
+                    showFiles.add(f);
+                }
+            }
+        } else if (dirName.equalsIgnoreCase("PLAYLIST")) {
+            for (IsoFile f : parser.getFiles()) {
+                if (f.name.endsWith(".mpls")) {
+                    showFiles.add(f);
+                }
+            }
+        } else if (dirName.equalsIgnoreCase("CLIPINF")) {
+            for (IsoFile f : parser.getFiles()) {
+                if (f.name.endsWith(".clpi")) {
+                    showFiles.add(f);
+                }
+            }
+        } else if (dirName.equalsIgnoreCase("BDJO")) {
+            for (IsoFile f : parser.getFiles()) {
+                if (f.name.endsWith(".bdjo")) {
+                    showFiles.add(f);
+                }
+            }
+        } else if (dirName.equalsIgnoreCase("JAR")) {
+            for (IsoFile f : parser.getFiles()) {
+                if (f.name.endsWith(".jar")) {
+                    showFiles.add(f);
+                }
+            }
+        } else if (dirName.equalsIgnoreCase("META")) {
+            for (IsoFile f : parser.getFiles()) {
+                if (f.name.endsWith(".xml") || f.name.endsWith(".jpg")) {
+                    showFiles.add(f);
+                }
+            }
+        } else {
+            // Default: show files matching directory name pattern or all files
+            for (IsoFile f : parser.getFiles()) {
+                if (f.name.toLowerCase().contains(dirName.toLowerCase())) {
+                    showFiles.add(f);
                 }
             }
         }
         
-        // Show directories first
-        for (String d : new TreeSet<>(dirs.keySet())) {
-            if (d.equals(path) || (path.equals("/BDMV") && d.equals("/BDMV"))) {
-                // Show subdirs
+        // Sort and show
+        showFiles.sort(Comparator.comparing(f -> f.name));
+        
+        for (IsoFile f : showFiles) {
+            String fname = f.name;
+            // Use a default name based on type if no full path
+            if (dirName.equalsIgnoreCase("STREAM")) {
+                fname = "00007.m2ts".replace("00007", fname.replace(".m2ts", ""));
+            }
+            html += "<li><a href='/download?sector=" + f.sector + "&name=" + fname + "'>" + f.name + "</a> [" + f.sector + "]</li>";
+        }
+        
+        if (showFiles.isEmpty()) {
+            html += "<li>No " + dirName + " files found - showing all files</li>";
+            // Show all files as fallback
+            for (IsoFile f : parser.getFiles()) {
+                html += "<li><a href='/download?sector=" + f.sector + "&name=" + f.name + "'>" + f.name + "</a> [" + f.sector + "]</li>";
             }
         }
         
-        // Show files
-        for (IsoFile f : files) {
-            String fname = f.name;
-            int slash = fname.lastIndexOf('/');
-            if (slash > 0) fname = fname.substring(slash + 1);
-            
-            String ext = "";
-            int dot = fname.lastIndexOf('.');
-            if (dot > 0) ext = fname.substring(dot);
-            
-            html.append("<li>📄 <a href='/download?sector=").append(f.sector)
-                .append("&name=").append(fname).append("'>").append(fname).append("</a>")
-                .append(" <span class='size'>[sector: ").append(f.sector).append("]</span></li>");
-        }
+        html += "</ul></body></html>";
         
-        html.append("</ul></body></html>");
-        return html.toString();
+        byte[] data = html.getBytes("utf-8");
+        ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+        ex.sendResponseHeaders(200, data.length);
+        ex.getResponseBody().write(data);
+        ex.getResponseBody().close();
     }
 }
