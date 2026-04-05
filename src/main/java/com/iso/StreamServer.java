@@ -19,16 +19,13 @@ public class StreamServer {
         
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
         
-        // Home - 文件浏览器
+        // 首页 - 文件浏览器
         server.createContext("/", ex -> {
-            try {
-                showRoot(ex);
-            } catch (Exception e) {
-                ex.sendResponseHeaders(500, 0);
-            }
+            try { showRoot(ex); } 
+            catch (Exception e) { ex.sendResponseHeaders(500, 0); }
         });
         
-        // Files JSON API
+        // 文件列表 API
         server.createContext("/files", ex -> {
             StringBuilder sb = new StringBuilder();
             sb.append("{\"files\":[");
@@ -48,57 +45,65 @@ public class StreamServer {
             ex.getResponseBody().close();
         });
         
-        // Download/Stream
-        server.createContext("/download", ex -> handleFileRequest(ex, false));
-        server.createContext("/stream", ex -> handleFileRequest(ex, true));
+        // 播放: /play/STREAM/00007.m2ts
+        server.createContext("/play", ex -> handlePlayRequest(ex, false));
+        
+        // 下载: /download/STREAM/00007.m2ts  
+        server.createContext("/download", ex -> handlePlayRequest(ex, true));
         
         server.setExecutor(null);
         server.start();
         System.out.println("Server: http://localhost:8080");
     }
     
-    static void handleFileRequest(HttpExchange ex, boolean isStream) {
-        String query = ex.getRequestURI().getQuery();
-        String sectorStr = null, filename = "file";
+    // 根据文件名查找文件
+    static IsoFile findFile(String path) {
+        // 清理路径
+        if (path.startsWith("/")) path = path.substring(1);
         
-        if (query != null && query.contains("sector=")) {
-            int s = query.indexOf("sector=") + 7;
-            int e = query.indexOf("&", s);
-            if (e < 0) e = query.length();
-            sectorStr = query.substring(s, e);
+        // 直接匹配
+        for (IsoFile f : parser.getFiles()) {
+            if (f.name.equals(path)) return f;
         }
         
-        if (query != null && query.contains("name=")) {
-            int s = query.indexOf("name=") + 5;
-            filename = query.substring(s);
-            try { filename = URLDecoder.decode(filename, "utf-8"); } catch (Exception e) {}
+        // 短文件名匹配
+        for (IsoFile f : parser.getFiles()) {
+            String shortName = f.name.contains("/") ? f.name.substring(f.name.lastIndexOf("/") + 1) : f.name;
+            if (shortName.equals(path)) return f;
         }
         
-        if (sectorStr == null) {
+        return null;
+    }
+    
+    // 处理播放/下载请求
+    static void handlePlayRequest(HttpExchange ex, boolean isDownload) {
+        String path = ex.getRequestURI().getPath();
+        
+        // 移除 /play 或 /download 前缀
+        if (path.startsWith("/play")) path = path.substring(5);
+        else if (path.startsWith("/download")) path = path.substring(9);
+        
+        if (path.isEmpty() || path.equals("/")) {
             try { ex.sendResponseHeaders(400, 0); } catch (Exception e) {}
             return;
         }
         
         try {
-            long sector = Long.parseLong(sectorStr);
-            long fileSize = 0;
-            for (IsoFile f : parser.getFiles()) {
-                // 匹配：完整路径或纯文件名
-                String shortName = f.name.contains("/") ? f.name.substring(f.name.lastIndexOf("/") + 1) : f.name;
-                if (f.name.equals(filename) || shortName.equals(filename) || 
-                    f.name.replace(".m2ts", ".mts").equals(filename)) {
-                    fileSize = f.size;
-                    break;
-                }
+            // URL 解码
+            path = URLDecoder.decode(path, "utf-8");
+            
+            // 查找文件
+            IsoFile f = findFile(path);
+            if (f == null) {
+                ex.getResponseHeaders().set("Content-Type", "text/plain");
+                ex.sendResponseHeaders(404, 0);
+                ex.getResponseBody().close();
+                return;
             }
-            // 如果还是找不到，尝试从URL参数获取size
-            if (fileSize <= 0 && query != null && query.contains("size=")) {
-                int s = query.indexOf("size=") + 5;
-                int e = query.indexOf("&", s);
-                if (e < 0) e = query.length();
-                try { fileSize = Long.parseLong(query.substring(s, e)); } catch (Exception e2) {}
-            }
-            if (fileSize <= 0) fileSize = 100 * 1024 * 1024;
+            
+            long sector = f.sector;
+            long fileSize = f.size;
+            String filename = f.name.substring(f.name.lastIndexOf("/") + 1);
             
             // Range 请求支持
             String rangeHeader = ex.getRequestHeaders().getFirst("Range");
@@ -117,14 +122,20 @@ public class StreamServer {
             end = Math.min(end, fileSize - 1);
             long contentLength = end - start + 1;
             
-            byte[] data = parser.readFileRange(sector, start, (int)contentLength);
+            // 读取数据 (M2TS 从偏移 4 开始)
+            byte[] data = parser.readFileRange(sector, start == 0 ? 4 : start, (int)(contentLength - 4));
             if (data == null) data = new byte[0];
             
+            // 设置响应头
             ex.getResponseHeaders().set("Content-Type", "video/mp2t");
             ex.getResponseHeaders().set("Content-Length", String.valueOf(data.length));
-            ex.getResponseHeaders().set("Content-Disposition", "inline; filename=\"" + filename + "\"");
             ex.getResponseHeaders().set("Accept-Ranges", "bytes");
-            ex.getResponseHeaders().set("Content-Range", "bytes " + start + "-" + end + "/" + fileSize);
+            if (!isDownload) {
+                ex.getResponseHeaders().set("Content-Disposition", "inline; filename=\"" + filename + "\"");
+            }
+            if (rangeHeader != null) {
+                ex.getResponseHeaders().set("Content-Range", "bytes " + start + "-" + end + "/" + fileSize);
+            }
             
             int status = (rangeHeader != null) ? 206 : 200;
             ex.sendResponseHeaders(status, data.length);
@@ -144,8 +155,7 @@ public class StreamServer {
         m2tsFiles.sort(Comparator.comparing(f -> f.name));
         
         String html = "<!DOCTYPE html>\n" +
-            "<html>\n" +
-            "<head>\n" +
+            "<html>\n<head>\n" +
             "<meta charset='utf-8'>\n" +
             "<title>🦕 Jurassic World Blu-ray</title>\n" +
             "<style>\n" +
@@ -159,12 +169,11 @@ public class StreamServer {
             ".stat-value { font-size: 1.5em; font-weight: bold; color: #4fc3f7; }\n" +
             ".stat-label { color: #888; font-size: 0.9em; }\n" +
             ".file-list { background: rgba(255,255,255,0.05); border-radius: 15px; overflow: hidden; }\n" +
-            ".file-header { display: grid; grid-template-columns: 1fr 120px 120px 180px; gap: 10px; padding: 15px 20px; background: rgba(0,0,0,0.3); font-weight: bold; color: #888; border-bottom: 1px solid rgba(255,255,255,0.1); }\n" +
-            ".file-row { display: grid; grid-template-columns: 1fr 120px 120px 180px; gap: 10px; padding: 12px 20px; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.2s; }\n" +
+            ".file-header { display: grid; grid-template-columns: 1fr 120px 180px; gap: 10px; padding: 15px 20px; background: rgba(0,0,0,0.3); font-weight: bold; color: #888; border-bottom: 1px solid rgba(255,255,255,0.1); }\n" +
+            ".file-row { display: grid; grid-template-columns: 1fr 120px 180px; gap: 10px; padding: 12px 20px; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.2s; }\n" +
             ".file-row:hover { background: rgba(255,255,255,0.1); }\n" +
             ".file-name { font-family: monospace; font-size: 1.1em; }\n" +
             ".file-size { color: #888; font-family: monospace; }\n" +
-            ".file-sector { color: #666; font-family: monospace; font-size: 0.9em; }\n" +
             ".btn-group { display: flex; gap: 8px; }\n" +
             ".btn { padding: 6px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9em; text-decoration: none; display: inline-block; transition: all 0.2s; }\n" +
             ".btn-play { background: #4caf50; color: white; }\n" +
@@ -172,11 +181,8 @@ public class StreamServer {
             ".btn-download { background: #2196f3; color: white; }\n" +
             ".btn-download:hover { background: #1976d2; }\n" +
             ".btn:hover { transform: translateY(-2px); }\n" +
-            ".progress { background: rgba(255,255,255,0.1); height: 4px; border-radius: 2px; margin-top: 5px; }\n" +
-            ".progress-bar { background: linear-gradient(90deg, #4caf50, #8bc34a); height: 100%; border-radius: 2px; }\n" +
             "@media (max-width: 768px) {\n" +
             "  .file-header, .file-row { grid-template-columns: 1fr 80px 120px; }\n" +
-            "  .file-sector { display: none; }\n" +
             "  .btn-group { flex-direction: column; }\n" +
             "}\n" +
             "</style>\n" +
@@ -195,18 +201,17 @@ public class StreamServer {
             "  <div class='file-header'>\n" +
             "    <span>File Name</span>\n" +
             "    <span>Size</span>\n" +
-            "    <span>Sector</span>\n" +
             "    <span>Actions</span>\n" +
             "  </div>\n";
         
         for (IsoFile f : m2tsFiles) {
-            String playUrl = "/stream?sector=" + f.sector + "&size=" + f.size + "&name=" + f.name + "&start=4";
-            String downloadUrl = "/download?sector=" + f.sector + "&size=" + f.size + "&name=" + f.name + "&start=4";
+            // 简单 URL：只需要文件名
+            String playUrl = "/play/" + f.name;
+            String downloadUrl = "/download/" + f.name;
             
             html += "  <div class='file-row'>\n" +
                 "    <span class='file-name'>" + f.name + "</span>\n" +
                 "    <span class='file-size'>" + formatSize(f.size) + "</span>\n" +
-                "    <span class='file-sector'>" + f.sector + "</span>\n" +
                 "    <div class='btn-group'>\n" +
                 "      <a class='btn btn-play' href='" + playUrl + "' target='_blank'>▶ Play</a>\n" +
                 "      <a class='btn btn-download' href='" + downloadUrl + "' download>⬇ Download</a>\n" +
