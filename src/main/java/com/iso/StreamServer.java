@@ -15,20 +15,14 @@ public class StreamServer {
         
         parser = new UdfParser(url);
         parser.parse();
-        
         System.out.println("Parsed " + parser.getFiles().size() + " files");
         
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
         
-        // Home - file browser
+        // Home - 文件浏览器
         server.createContext("/", ex -> {
             try {
-                String path = ex.getRequestURI().getPath();
-                if (path.equals("/")) {
-                    showRoot(ex);
-                } else {
-                    showDirectory(ex, path);
-                }
+                showRoot(ex);
             } catch (Exception e) {
                 ex.sendResponseHeaders(500, 0);
             }
@@ -47,7 +41,6 @@ public class StreamServer {
                 if (i < files.size() - 1) sb.append(",");
             }
             sb.append("],\"total\":").append(files.size()).append("}");
-            
             byte[] data = sb.toString().getBytes("utf-8");
             ex.getResponseHeaders().set("Content-Type", "application/json");
             ex.sendResponseHeaders(200, data.length);
@@ -55,15 +48,9 @@ public class StreamServer {
             ex.getResponseBody().close();
         });
         
-        // Download/Stream - supports full file and Range requests
-        server.createContext("/download", ex -> {
-            handleFileRequest(ex, false);
-        });
-        
-        // Stream endpoint (alias for download)
-        server.createContext("/stream", ex -> {
-            handleFileRequest(ex, true);
-        });
+        // Download/Stream
+        server.createContext("/download", ex -> handleFileRequest(ex, false));
+        server.createContext("/stream", ex -> handleFileRequest(ex, true));
         
         server.setExecutor(null);
         server.start();
@@ -80,6 +67,7 @@ public class StreamServer {
             if (e < 0) e = query.length();
             sectorStr = query.substring(s, e);
         }
+        
         if (query != null && query.contains("name=")) {
             int s = query.indexOf("name=") + 5;
             filename = query.substring(s);
@@ -93,8 +81,6 @@ public class StreamServer {
         
         try {
             long sector = Long.parseLong(sectorStr);
-            
-            // Find the file to get its actual size
             long fileSize = 0;
             for (IsoFile f : parser.getFiles()) {
                 if (f.name.equals(filename) || f.name.replace(".m2ts", ".mts").equals(filename)) {
@@ -102,11 +88,9 @@ public class StreamServer {
                     break;
                 }
             }
-            
-            // Default size if not found (100MB)
             if (fileSize <= 0) fileSize = 100 * 1024 * 1024;
             
-            // Parse Range header
+            // Range 请求支持
             String rangeHeader = ex.getRequestHeaders().getFirst("Range");
             long start = 0;
             long end = fileSize - 1;
@@ -120,16 +104,12 @@ public class StreamServer {
                 }
             }
             
-            // Limit end to file size
             end = Math.min(end, fileSize - 1);
             long contentLength = end - start + 1;
             
-            // Read the requested range
-            byte[] data = parser.readFileRange(sector, start, contentLength);
-            
+            byte[] data = parser.readFileRange(sector, start, (int)contentLength);
             if (data == null) data = new byte[0];
             
-            // Set headers
             ex.getResponseHeaders().set("Content-Type", "video/mp2t");
             ex.getResponseHeaders().set("Content-Length", String.valueOf(data.length));
             ex.getResponseHeaders().set("Content-Disposition", "inline; filename=\"" + filename + "\"");
@@ -138,10 +118,8 @@ public class StreamServer {
             
             int status = (rangeHeader != null) ? 206 : 200;
             ex.sendResponseHeaders(status, data.length);
-            
-            OutputStream os = ex.getResponseBody();
-            os.write(data);
-            os.close();
+            ex.getResponseBody().write(data);
+            ex.getResponseBody().close();
             
         } catch (Exception e) {
             try { ex.sendResponseHeaders(500, 0); } catch (Exception ex2) {}
@@ -149,35 +127,87 @@ public class StreamServer {
     }
     
     static void showRoot(HttpExchange ex) throws Exception {
-        String html = "<!DOCTYPE html><html><head>" +
-            "<meta charset='utf-8'><title>Blu-ray ISO</title>" +
-            "<style>body{font-family:monospace;padding:20px;background:#f5f5f5}" +
-            "h1{color:#333}h2{color:#666;margin-top:20px}" +
-            "a{text-decoration:none;color:#0066cc;display:block;padding:8px}" +
-            "a:hover{background:#e0e0e0;border-radius:4px}" +
-            "ul{background:white;padding:20px;border-radius:8px;list-style:none;box-shadow:0 2px 4px rgba(0,0,0,0.1)}" +
-            "li{padding:5px 0;border-bottom:1px solid #eee}.dir:before{content:'📁 '}" +
-            "table{width:100%;border-collapse:collapse}td,th{padding:8px;text-align:left;border-bottom:1px solid #eee}" +
-            "th{background:#f0f0f0}.size{color:#888;font-size:0.9em}</style></head><body>" +
-            "<h1>🦕 Jurassic World Blu-ray ISO</h1>" +
-            "<p>Total files: " + parser.getFiles().size() + " | <a href='/files'>JSON</a></p>" +
-            "<h2>📁 Root Directory</h2><ul>";
-        
-        Set<String> rootDirs = new TreeSet<>();
+        List<IsoFile> m2tsFiles = new ArrayList<>();
         for (IsoFile f : parser.getFiles()) {
-            if (!f.name.contains("/")) {
-                rootDirs.add(f.name);
-            }
+            if (f.name.endsWith(".m2ts")) m2tsFiles.add(f);
+        }
+        m2tsFiles.sort(Comparator.comparing(f -> f.name));
+        
+        String html = "<!DOCTYPE html>\n" +
+            "<html>\n" +
+            "<head>\n" +
+            "<meta charset='utf-8'>\n" +
+            "<title>🦕 Jurassic World Blu-ray</title>\n" +
+            "<style>\n" +
+            "* { box-sizing: border-box; margin: 0; padding: 0; }\n" +
+            "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); min-height: 100vh; color: #fff; padding: 20px; }\n" +
+            ".container { max-width: 1200px; margin: 0 auto; }\n" +
+            "h1 { font-size: 2em; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }\n" +
+            ".subtitle { color: #888; margin-bottom: 30px; }\n" +
+            ".stats { display: flex; gap: 20px; margin-bottom: 30px; }\n" +
+            ".stat { background: rgba(255,255,255,0.1); padding: 15px 25px; border-radius: 10px; }\n" +
+            ".stat-value { font-size: 1.5em; font-weight: bold; color: #4fc3f7; }\n" +
+            ".stat-label { color: #888; font-size: 0.9em; }\n" +
+            ".file-list { background: rgba(255,255,255,0.05); border-radius: 15px; overflow: hidden; }\n" +
+            ".file-header { display: grid; grid-template-columns: 1fr 120px 120px 180px; gap: 10px; padding: 15px 20px; background: rgba(0,0,0,0.3); font-weight: bold; color: #888; border-bottom: 1px solid rgba(255,255,255,0.1); }\n" +
+            ".file-row { display: grid; grid-template-columns: 1fr 120px 120px 180px; gap: 10px; padding: 12px 20px; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.2s; }\n" +
+            ".file-row:hover { background: rgba(255,255,255,0.1); }\n" +
+            ".file-name { font-family: monospace; font-size: 1.1em; }\n" +
+            ".file-size { color: #888; font-family: monospace; }\n" +
+            ".file-sector { color: #666; font-family: monospace; font-size: 0.9em; }\n" +
+            ".btn-group { display: flex; gap: 8px; }\n" +
+            ".btn { padding: 6px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9em; text-decoration: none; display: inline-block; transition: all 0.2s; }\n" +
+            ".btn-play { background: #4caf50; color: white; }\n" +
+            ".btn-play:hover { background: #45a049; }\n" +
+            ".btn-download { background: #2196f3; color: white; }\n" +
+            ".btn-download:hover { background: #1976d2; }\n" +
+            ".btn:hover { transform: translateY(-2px); }\n" +
+            ".progress { background: rgba(255,255,255,0.1); height: 4px; border-radius: 2px; margin-top: 5px; }\n" +
+            ".progress-bar { background: linear-gradient(90deg, #4caf50, #8bc34a); height: 100%; border-radius: 2px; }\n" +
+            "@media (max-width: 768px) {\n" +
+            "  .file-header, .file-row { grid-template-columns: 1fr 80px 120px; }\n" +
+            "  .file-sector { display: none; }\n" +
+            "  .btn-group { flex-direction: column; }\n" +
+            "}\n" +
+            "</style>\n" +
+            "</head>\n" +
+            "<body>\n" +
+            "<div class='container'>\n" +
+            "<h1>🦕 Jurassic World Blu-ray</h1>\n" +
+            "<p class='subtitle'>UDF ISO Network Streamer</p>\n" +
+            "\n" +
+            "<div class='stats'>\n" +
+            "  <div class='stat'><div class='stat-value'>" + m2tsFiles.size() + "</div><div class='stat-label'>Video Files</div></div>\n" +
+            "  <div class='stat'><div class='stat-value'>" + formatSize(getTotalSize(m2tsFiles)) + "</div><div class='stat-label'>Total Size</div></div>\n" +
+            "</div>\n" +
+            "\n" +
+            "<div class='file-list'>\n" +
+            "  <div class='file-header'>\n" +
+            "    <span>File Name</span>\n" +
+            "    <span>Size</span>\n" +
+            "    <span>Sector</span>\n" +
+            "    <span>Actions</span>\n" +
+            "  </div>\n";
+        
+        for (IsoFile f : m2tsFiles) {
+            String playUrl = "/stream?sector=" + f.sector + "&size=" + f.size + "&name=" + f.name + "&start=4";
+            String downloadUrl = "/download?sector=" + f.sector + "&size=" + f.size + "&name=" + f.name + "&start=4";
+            
+            html += "  <div class='file-row'>\n" +
+                "    <span class='file-name'>" + f.name + "</span>\n" +
+                "    <span class='file-size'>" + formatSize(f.size) + "</span>\n" +
+                "    <span class='file-sector'>" + f.sector + "</span>\n" +
+                "    <div class='btn-group'>\n" +
+                "      <a class='btn btn-play' href='" + playUrl + "' target='_blank'>▶ Play</a>\n" +
+                "      <a class='btn btn-download' href='" + downloadUrl + "' download>⬇ Download</a>\n" +
+                "    </div>\n" +
+                "  </div>\n";
         }
         
-        for (String d : rootDirs) {
-            boolean isDir = !d.contains(".");
-            if (isDir) {
-                html += "<li class='dir'><a href='/" + d + "/'>" + d + "</a></li>";
-            }
-        }
-        
-        html += "</ul></body></html>";
+        html += "</div>\n" +
+            "</div>\n" +
+            "</body>\n" +
+            "</html>";
         
         byte[] data = html.getBytes("utf-8");
         ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
@@ -186,68 +216,10 @@ public class StreamServer {
         ex.getResponseBody().close();
     }
     
-    static void showDirectory(HttpExchange ex, String path) throws Exception {
-        String dirName = path;
-        if (dirName.startsWith("/")) dirName = dirName.substring(1);
-        if (dirName.endsWith("/")) dirName = dirName.substring(0, dirName.length() - 1);
-        
-        String html = "<!DOCTYPE html><html><head>" +
-            "<meta charset='utf-8'><title>" + dirName + "</title>" +
-            "<style>body{font-family:monospace;padding:20px;background:#f5f5f5}" +
-            "a{text-decoration:none;color:#0066cc;display:block;padding:8px}" +
-            "a:hover{background:#e0e0e0;border-radius:4px}" +
-            "ul{background:white;padding:20px;border-radius:8px;list-style:none;box-shadow:0 2px 4px rgba(0,0,0,0.1)}" +
-            "li{padding:5px 0;border-bottom:1px solid #eee}.back{color:#666;margin-bottom:10px}" +
-            "table{width:100%;border-collapse:collapse}td,th{padding:8px;text-align:left;border-bottom:1px solid #eee}" +
-            "th{background:#f0f0f0}.size{color:#888;font-size:0.9em}</style></head><body>" +
-            "<h1>📁 /" + dirName + "/</h1>" +
-            "<a class='back' href='/'>⬆️ Back to Root</a>" +
-            "<h2>📄 Files in this directory</h2><table><tr><th>Name</th><th>Size</th><th>Sector</th></tr>";
-        
-        List<IsoFile> showFiles = new ArrayList<>();
-        
-        if (dirName.equalsIgnoreCase("STREAM")) {
-            for (IsoFile f : parser.getFiles()) {
-                if (f.name.endsWith(".m2ts")) showFiles.add(f);
-            }
-        } else if (dirName.equalsIgnoreCase("PLAYLIST")) {
-            for (IsoFile f : parser.getFiles()) {
-                if (f.name.endsWith(".mpls")) showFiles.add(f);
-            }
-        } else if (dirName.equalsIgnoreCase("CLIPINF")) {
-            for (IsoFile f : parser.getFiles()) {
-                if (f.name.endsWith(".clpi")) showFiles.add(f);
-            }
-        } else if (dirName.equalsIgnoreCase("BDJO")) {
-            for (IsoFile f : parser.getFiles()) {
-                if (f.name.endsWith(".bdjo")) showFiles.add(f);
-            }
-        } else if (dirName.equalsIgnoreCase("JAR")) {
-            for (IsoFile f : parser.getFiles()) {
-                if (f.name.endsWith(".jar")) showFiles.add(f);
-            }
-        } else if (dirName.equalsIgnoreCase("META")) {
-            for (IsoFile f : parser.getFiles()) {
-                if (f.name.endsWith(".xml") || f.name.endsWith(".jpg")) showFiles.add(f);
-            }
-        }
-        
-        showFiles.sort(Comparator.comparing(f -> f.name));
-        
-        for (IsoFile f : showFiles) {
-            String fname = f.name;
-            html += "<tr><td><a href='/download?sector=" + f.sector + "&name=" + fname + "'>" + fname + "</a></td>";
-            html += "<td class='size'>" + formatSize(f.size) + "</td>";
-            html += "<td class='size'>" + f.sector + "</td></tr>";
-        }
-        
-        html += "</table></body></html>";
-        
-        byte[] data = html.getBytes("utf-8");
-        ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
-        ex.sendResponseHeaders(200, data.length);
-        ex.getResponseBody().write(data);
-        ex.getResponseBody().close();
+    static long getTotalSize(List<IsoFile> files) {
+        long total = 0;
+        for (IsoFile f : files) total += f.size;
+        return total;
     }
     
     static String formatSize(long size) {
